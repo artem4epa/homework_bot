@@ -1,4 +1,5 @@
 import os
+import sys
 import requests
 import time
 from dotenv import load_dotenv
@@ -7,6 +8,8 @@ import telegram
 import logging
 import logging.config
 import copy
+from http import HTTPStatus
+from errors import ConnectionError
 
 
 load_dotenv()
@@ -21,11 +24,12 @@ ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
 
-HOMEWORK_STATUSES = {
+HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
     'reviewing': 'Работа взята на проверку ревьюером.',
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
+
 logging.config.fileConfig('logging.conf')
 logger = logging.getLogger('bot')
 
@@ -33,61 +37,66 @@ logger = logging.getLogger('bot')
 def send_message(bot, message):
     """Функция отправляет сообщение."""
     bot = Bot(token=TELEGRAM_TOKEN)
-    return bot.send_message(TELEGRAM_CHAT_ID, message)
+    response = bot.send_message(TELEGRAM_CHAT_ID, message)
+    if response:
+        logger.info('Сообщение успешно отправленно.')
+        return response
+    else:
+        logger.error('Ошибка отправки сообщения.')
 
 
 def get_api_answer(current_timestamp):
     """Функция отправляет API запрос."""
-    timestamp = current_timestamp or int(time.time())
-    params = {'from_date': timestamp}
-    headers = HEADERS
-    response = requests.get(ENDPOINT, headers=headers, params=params)
-    if response.status_code != 200:
-        logger.error(
-            'Сбой в работе: URL {0} недоступен. Код ответа API: {1}'.format(
-                ENDPOINT, response.status_code
-            ))
-        raise requests.ConnectionError(
-            "Expected status code 200, but got {0}".format(
-                response.status_code
+    try:
+        logger.info('Старт API запроса.')
+        timestamp = current_timestamp or int(time.time())
+        params = {'from_date': timestamp}
+        headers = HEADERS
+        response = requests.get(ENDPOINT, headers=headers, params=params)
+        if response.status_code == HTTPStatus.OK:
+            response = response.json()
+            return response
+        else:
+            raise ConnectionError(
+                "Response: {0}, parameters: {1}".format(
+                    response.text, response.request
+                )
             )
-        )
-    response = response.json()
-    return response
+    except ConnectionError:
+        raise ConnectionError('Соединение оборвалось')
 
 
 def check_response(response):
     """Функция проверяет получаемые в запросе данные."""
-    homework = response['homeworks']
-    if homework is None:
-        logger.info('Нет домашки.')
-        raise Exception('Нет домашней работы')
-    if homework != list(homework):
-        logger.error('Запрос не вернул список')
-        raise TypeError('Запрос не вернул список')
-    return homework
+    if isinstance(response, dict):
+        if response.keys() & {'homeworks', 'current_date'}:
+            homeworks = response.get('homeworks')
+        else:
+            raise ValueError('Ошибка')
+        if not isinstance(homeworks, list):
+            raise TypeError('Запрос не вернул список')
+        return homeworks
+    else:
+        raise TypeError('Некорректный тип данных')
 
 
-def parse_status(homework):
+def parse_status(homeworks):
     """Функция на основе полученных данных формирует сообщение."""
-    homework_name = homework['homework_name']
-    homework_status = homework['status']
-    verdict = HOMEWORK_STATUSES[homework_status]
-    return 'Изменился статус проверки работы "{0}". {1}'.format(
-        homework_name, verdict
-    )
+    if homeworks.keys() & {'homework_name', 'status'}:
+        homework_name = homeworks.get('homework_name')
+        homework_status = homeworks.get('status')
+        verdict = HOMEWORK_VERDICTS[homework_status]
+        return 'Изменился статус проверки работы "{0}". {1}'.format(
+            homework_name, verdict
+        )
+    else:
+        raise ValueError('Отсутствуют необходимые данные.')
 
 
 def check_tokens():
     """Функция проверяет доступность глобальных переменных."""
-    if (
-        PRACTICUM_TOKEN is None
-        or TELEGRAM_TOKEN is None
-        or TELEGRAM_CHAT_ID is None
-    ):
-        return False
-    else:
-        return True
+    checking = all([PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID])
+    return checking
 
 
 def main():
@@ -96,28 +105,29 @@ def main():
     current_timestamp = int(time.time())
     message_s = ''
     message_f = copy.deepcopy(message_s)
-    while check_tokens():
-        try:
-            response = get_api_answer(current_timestamp)
-            homework = check_response(response)
-            if homework:
-                message_f = parse_status(homework)
-                if message_f != message_s:
-                    send_message(bot, message_f)
-                    logger.info('Сообщение успешно отправленно')
-                    current_timestamp = current_timestamp
-                    time.sleep(RETRY_TIME)
-                message_s = copy.deepcopy(message_f)
+    if check_tokens():
+        while True:
+            try:
+                response = get_api_answer(current_timestamp)
+                homeworks = check_response(response)
+                if homeworks:
+                    message_f = parse_status(homeworks)
+                    if message_f != message_s:
+                        send_message(bot, message_f)
+                        current_timestamp = current_timestamp
+                    message_s = copy.deepcopy(message_f)
 
-        except Exception as error:
-            logger.error('Сеть недоступна')
-            message = f'Сбой в работе программы: {error}'
-            send_message(bot, message)
-            time.sleep(RETRY_TIME)
+            except Exception as error:
+                logger.error(f'Сбой работы программы: {error}')
+                message = f'Сбой в работе программы: {error}'
+                send_message(bot, message)
+            finally:
+                time.sleep(RETRY_TIME)
     else:
         logger.critical('Переменные окружения недоступны.')
         message = 'Переменные недоступны.'
         send_message(bot, message)
+        sys.exit()
 
 
 if __name__ == '__main__':
