@@ -30,7 +30,6 @@ HOMEWORK_VERDICTS = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.'
 }
 
-logging.config.fileConfig('logging.conf')
 logger = logging.getLogger('bot')
 
 
@@ -131,4 +130,5 @@ def main():
 
 
 if __name__ == '__main__':
+    logging.config.fileConfig('logging.conf')
     main()
