@@ -34,11 +34,13 @@ logger = logging.getLogger('bot')
 def send_message(bot, message):
     """Функция отправляет сообщение."""
     bot = Bot(token=TELEGRAM_TOKEN)
-    response = bot.send_message(TELEGRAM_CHAT_ID, message)
+    try:
+        response = bot.send_message(TELEGRAM_CHAT_ID, message)
+    except Exception:
+        raise Exception('Сообщение не отправленно.')
     if response:
         logger.info('Сообщение успешно отправленно.')
         return response
-    raise Exception('Сообщение не отправленно.')
 
 
 def get_api_answer(current_timestamp):
@@ -66,7 +68,9 @@ def check_response(response):
     if not isinstance(response, dict):
         raise TypeError('Неверный тип данных.')
     if 'current_date' not in response or 'homeworks' not in response:
-        raise ValueError('Ошибка')
+        raise ValueError(
+            'В ответе отсутствуют ключи "current_date" и "homeworks"'
+        )
     homeworks = response.get('homeworks')
     if not isinstance(homeworks, list):
         raise TypeError('Запрос не вернул список')
@@ -80,9 +84,7 @@ def parse_status(homework):
     homework_name = homework.get('homework_name')
     homework_status = homework.get('status')
     verdict = HOMEWORK_VERDICTS[homework_status]
-    return 'Изменился статус проверки работы "{0}". {1}'.format(
-        homework_name, verdict,
-    )
+    return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
 def check_tokens():
@@ -95,7 +97,7 @@ def main():
     """Основная логика работы бота."""
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     current_timestamp = int(time.time())
-    message_s = ''
+    message_start = ''
     if not check_tokens():
         logger.critical('Переменные окружения недоступны.')
         message = 'Переменные недоступны.'
@@ -105,16 +107,16 @@ def main():
         try:
             response = get_api_answer(current_timestamp)
             homeworks = check_response(response)
+            current_timestamp = current_timestamp
             if homeworks:
                 message = parse_status(homeworks[0])
-                if message != message_s:
+                if message != message_start:
                     send_message(bot, message)
-                    message_s = message
-                    current_timestamp = current_timestamp
-
+                    message_start = message
+            logger.debug('Списка домашек нет в ответе.')
         except Exception as error:
-            logger.error(f'Сбой работы программы: {error}')
             message = f'Сбой в работе программы: {error}'
+            logger.error(message)
             send_message(bot, message)
         finally:
             time.sleep(RETRY_TIME)
